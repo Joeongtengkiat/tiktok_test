@@ -257,6 +257,16 @@ def main() -> None:
                 q = max(1, k // 2)
                 loss = per.topk(q, dim=1).values.mean()
 
+            # The clean view rides along in every forward pass (see above) but under
+            # max/cvar it drops out of `per` as soon as the head learns anything --
+            # it's the easiest view, so it stops being "worst" and stops getting a
+            # classification gradient. Left alone, the only thing touching `clean`'s
+            # weights is the consistency term below, and that term treats `clean` as
+            # a FIXED (detached) target for the other views, not something being
+            # pulled toward the label itself -- so clean-view accuracy is never
+            # actually optimised. Supervise it directly, every step.
+            loss = loss + bce(clean, yb).mean()
+
             if args.consistency > 0:
                 anchor = clean.detach().unsqueeze(1)                       # (b, 1)
                 loss = loss + args.consistency * ((logits - anchor) ** 2).mean()
