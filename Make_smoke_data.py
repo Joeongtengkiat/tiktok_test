@@ -30,7 +30,7 @@ def make_real(rng: np.random.Generator, size: int) -> np.ndarray:
     yy, xx = np.mgrid[0:size, 0:size]
     base = (0.5 + 0.3 * np.sin(xx / size * np.pi + rng.uniform(0, 6)) +
             0.2 * np.cos(yy / size * np.pi + rng.uniform(0, 6)))
-    img = np.stack(([base] * 3), axis=-1)
+    img = np.stack([base] * 3, axis=-1)
     img += rng.normal(0, 0.05, img.shape)
     return np.clip(img, 0, 1)
 
@@ -38,10 +38,7 @@ def make_real(rng: np.random.Generator, size: int) -> np.ndarray:
 def make_fake(rng: np.random.Generator, size: int) -> np.ndarray:
     img = make_real(rng, size)
     yy, xx = np.mgrid[0:size, 0:size]
-    # period ~24px, not 4px: a period-4 pattern is right at JPEG q90's and the
-    # default resize-to-224 preproc's cutoff and gets smoothed away before CLIP
-    # ever sees it, which was leaving clean-view AUROC stuck near chance.
-    grid = 0.15 * np.sin(xx * np.pi / 12) * np.sin(yy * np.pi / 12)   # faint checker artifact
+    grid = 0.04 * np.sin(xx * np.pi / 2) * np.sin(yy * np.pi / 2)   # faint checker artifact
     img += grid[..., None]
     img += rng.normal(0, 0.02, img.shape)                            # different noise profile
     return np.clip(img, 0, 1)

@@ -1,5 +1,4 @@
-"""Run this on YOUR machine (not this sandbox) to diagnose why torch isn't
-using the RTX 5090. Copy it into the aigc-detector folder and run:
+"""Run this on YOUR machine to diagnose GPU/CUDA setup issues with PyTorch.
     python gpu_diagnostic.py
 """
 import subprocess
@@ -20,10 +19,10 @@ print("2. PyTorch build check")
 print("=" * 60)
 import torch
 print(f"torch version:        {torch.__version__}")
-print(f"torch built with CUDA: {torch.cuda}")   # None = CPU-only wheel
+print(f"torch built with CUDA: {torch.version.cuda}")   # None = CPU-only wheel
 print(f"cuda.is_available():   {torch.cuda.is_available()}")
 
-if torch.cuda is None:
+if torch.version.cuda is None:
     print("\n>>> DIAGNOSIS: this is a CPU-ONLY torch build. torch.version.cuda")
     print(">>> is None, meaning CUDA support was never compiled in. This is")
     print(">>> the single most common cause. Fix: reinstall torch from the")
@@ -37,7 +36,7 @@ elif not torch.cuda.is_available():
 else:
     print(f"\n>>> torch.cuda.is_available() = True. Device: {torch.cuda.get_device_name(0)}")
     print(">>> Attempting a real forward pass on the GPU to confirm the")
-    print(">>> RTX 5090's compute capability (sm_120, Blackwell) has actual")
+    print(">>> your GPU's compute capability (sm_120, Blackwell) has actual")
     print(">>> compiled kernels in this torch build, not just driver-level detection...")
     try:
         x = torch.randn(4, 4, device="cuda")
@@ -53,7 +52,7 @@ else:
         print(">>> execution on the device' error -- torch.cuda.is_available()")
         print(">>> can return True from driver-level detection even when the")
         print(">>> installed torch build has no compiled kernels for the")
-        print(">>> 5090's specific compute capability (sm_120, Blackwell,")
+        print(">>> this GPU's specific compute capability (sm_120, Blackwell,")
         print(">>> very new). Fix: install a newer torch build (command below).")
 
 print("\n" + "=" * 60)
@@ -63,7 +62,7 @@ print("Uninstall whatever is there, then install the CUDA 12.4+ build:")
 print(f"  {sys.executable} -m pip uninstall -y torch torchvision")
 print(f"  {sys.executable} -m pip install torch torchvision "
      "--index-url https://download.pytorch.org/whl/cu124")
-print("\nIf that still doesn't detect the 5090 (Blackwell needs a genuinely")
+print("\nIf that still doesn't detect your GPU (Blackwell needs a genuinely")
 print("recent build), try the cu128 index instead:")
 print(f"  {sys.executable} -m pip install torch torchvision "
      "--index-url https://download.pytorch.org/whl/cu128")

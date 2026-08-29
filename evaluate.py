@@ -165,7 +165,7 @@ def main() -> None:
 
     # calibration: does the displayed probability mean anything?
     pa, pb = ck.get("platt_a", 1.0), ck.get("platt_b", 0.0)
-    from Train import expected_calibration_error
+    from train import expected_calibration_error
     report.append("\n## Calibration (Platt-scaled probabilities fitted on val)\n")
     cl = ["| condition | ECE raw | ECE calibrated | mean P(fake) real | mean P(fake) fake |",
           "|---|---|---|---|---|"]
