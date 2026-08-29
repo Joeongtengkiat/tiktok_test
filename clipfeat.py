@@ -257,11 +257,23 @@ def embed(
     feature: str = "proj",
     batch_size: int = 32,
     num_workers: int = 8,
+    max_forward_batch: int = 128,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Returns (feats, labels):
         feats  (N, V, D) float16
         labels (N,) int64,  -1 marks an image that failed to load
+
+    `batch_size` controls the DataLoader (how many *samples* are decoded and
+    augmented per step). The actual encoder forward pass sees batch_size *
+    n_views images at once, and n_views is the caller's business (embed.py
+    uses --views, evaluate.py uses one view per eval condition — that grid
+    can be 15-30+ conditions). Left uncapped, that silently multiplies
+    batch_size by the grid size and can spike CLIP activation memory by an
+    order of magnitude versus what --batch-size looks like it's asking for.
+    max_forward_batch decouples the two: the DataLoader still batches
+    batch_size samples at a time, but the encoder only ever sees
+    max_forward_batch images per forward() call regardless of n_views.
     """
     dl = DataLoader(
         dataset,
@@ -277,19 +289,24 @@ def embed(
     feats, labels = [], []
     for i, (x, y) in enumerate(dl):
         b = x.shape[0]
-        x = x.view(b * n_views, 3, RES, RES).to(device, non_blocking=True)
-        with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-            vout = model.vision_model(pixel_values=x)
-            pooled = vout.pooler_output                       # (B*V, H)
-            if feature == "pooled":
-                f = pooled
-            elif feature == "proj":
-                f = model.visual_projection(pooled)           # (B*V, P)
-            elif feature == "both":
-                f = torch.cat([pooled, model.visual_projection(pooled)], dim=-1)
-            else:
-                raise ValueError(f"unknown feature {feature!r}")
-        feats.append(f.float().view(b, n_views, -1).cpu().numpy().astype(np.float16))
+        x = x.view(b * n_views, 3, RES, RES)
+        chunks = []
+        for j in range(0, x.shape[0], max_forward_batch):
+            xc = x[j:j + max_forward_batch].to(device, non_blocking=True)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                vout = model.vision_model(pixel_values=xc)
+                pooled = vout.pooler_output                       # (b, H)
+                if feature == "pooled":
+                    f = pooled
+                elif feature == "proj":
+                    f = model.visual_projection(pooled)           # (b, P)
+                elif feature == "both":
+                    f = torch.cat([pooled, model.visual_projection(pooled)], dim=-1)
+                else:
+                    raise ValueError(f"unknown feature {feature!r}")
+            chunks.append(f.float().cpu())
+        f_all = torch.cat(chunks, 0)
+        feats.append(f_all.view(b, n_views, -1).numpy().astype(np.float16))
         labels.append(y.numpy())
         if i % 20 == 0:
             print(f"  batch {i}/{len(dl)}", flush=True)
