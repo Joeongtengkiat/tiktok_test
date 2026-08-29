@@ -23,7 +23,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 
 import augment as A
 import clipfeat as CF
-from Train import Head, fpr_at_tpr
+from train import Head, fpr_at_tpr
 
 
 def metrics(y: np.ndarray, s: np.ndarray, thr: float) -> dict:

@@ -29,7 +29,7 @@ from sklearn.metrics import roc_auc_score
 
 import augment as A
 import clipfeat as CF
-from Train import Head
+from train import Head
 
 BINS = [(0.00, 0.02), (0.02, 0.05), (0.05, 0.10), (0.10, 0.20), (0.20, 0.40), (0.40, 1.01)]
 
