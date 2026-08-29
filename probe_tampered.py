@@ -41,7 +41,11 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--reference", default="",
                     help="scores.npz from evaluate.py on the synthetic test set, for comparison")
-    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--batch-size", type=int, default=4,
+                    help="DataLoader batch size, in SAMPLES. This script always uses "
+                         "EVAL_GRID + CHAIN_GRID (22 conditions), so actual images-per-batch "
+                         "is batch_size * 22 -- kept low by default for the same VRAM reason "
+                         "as evaluate.py. Raise it if you have VRAM to spare.")
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()

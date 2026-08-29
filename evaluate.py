@@ -59,12 +59,23 @@ def main() -> None:
     ap.add_argument("--data", required=True)
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--batch-size", type=int, default=4,
+                    help="DataLoader batch size, in SAMPLES. Each condition in --groups is "
+                         "an extra view of every sample, so actual images-per-batch is "
+                         "batch_size * n_conditions -- with --groups all (28 conditions), "
+                         "even --batch-size 4 already means 112 images per loader batch. "
+                         "Kept low by default (unlike embed.py's 32) because this is a "
+                         "different memory shape: few conditions x this batch_size vs "
+                         "embed.py's many views x its batch_size. Raise it if you have "
+                         "VRAM to spare, especially with --groups grid/held/chain (fewer "
+                         "conditions than 'all').")
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--tta", type=int, default=0,
                     help="average the score over N native-resolution crops at test time")
     ap.add_argument("--groups", choices=["all", "held", "chain", "grid"], default="all")
+    ap.add_argument("--no-amp", action="store_true",
+                    help="DIAGNOSTIC: force full fp32 even on GPU (see embed.py --no-amp)")
     args = ap.parse_args()
 
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)

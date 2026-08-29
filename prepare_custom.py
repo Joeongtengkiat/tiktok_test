@@ -136,12 +136,26 @@ def apply_geometry(img: Image.Image, params) -> Image.Image:
 def place_one(src: Path, dst: Path, mode: str, rng: random.Random,
               normalise_geometry: bool, quality: int) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
+    final_dst = dst.with_suffix(".jpg") if normalise_geometry else dst
+    if final_dst.exists():
+        # A previous run got partway through (interrupted, crashed, or
+        # ensure_layout's all-three-splits check didn't consider this split
+        # "done" yet even though this individual file already was). Without
+        # this, a re-run hits FileExistsError on os.link, falls back to
+        # shutil.copy2, and THAT fails too -- copying src onto its own
+        # existing hardlink is a same-file no-op Python correctly refuses.
+        # Skipping an already-placed file is always correct: content is
+        # never re-derived per-run (hardlink/copy is byte-identical; even
+        # normalise_geometry's random crop is fine to leave as whatever it
+        # was on the first successful attempt).
+        return
+
     if normalise_geometry:
         with Image.open(src) as im:
             im = im.convert("RGB")
             params = geometry_params(*im.size, rng)
             im = apply_geometry(im, params)
-            im.save(dst.with_suffix(".jpg"), format="JPEG", quality=quality)
+            im.save(final_dst, format="JPEG", quality=quality)
         return
 
     if mode == "copy":
