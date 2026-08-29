@@ -34,27 +34,14 @@ RES = 224
 IMG_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
 
-# --------------------------------------------------------------------------
-# data scanning
-# --------------------------------------------------------------------------
-
-
 @dataclass
 class Sample:
     path: str
-    label: int      # 0 = real, 1 = fake
-    group: str      # generator name (fake) or source corpus (real)
+    label: int
+    group: str
 
 
 def scan_dir(root: str | Path) -> list[Sample]:
-    """
-    Expects:
-        root/real/<source>/*.jpg      (the <source> level is optional)
-        root/fake/<generator>/*.jpg
-
-    <generator> is what leave-one-generator-out evaluation splits on, so put
-    each generator in its own folder even if you only have two.
-    """
     root = Path(root)
     out: list[Sample] = []
     for label_name, label in (("real", 0), ("fake", 1)):
@@ -72,16 +59,11 @@ def scan_dir(root: str | Path) -> list[Sample]:
     return out
 
 
-# --------------------------------------------------------------------------
-# preprocessing
-# --------------------------------------------------------------------------
-
 _MEAN_T = torch.tensor(CLIP_MEAN).view(3, 1, 1)
 _STD_T = torch.tensor(CLIP_STD).view(3, 1, 1)
 
 
 def to_clip_tensor(img: Image.Image, preproc: str, py_rng: random.Random) -> torch.Tensor:
-    """PIL RGB -> normalised (3, 224, 224) float tensor."""
     if preproc == "resize":
         w, h = img.size
         s = RES / min(w, h)
@@ -91,7 +73,7 @@ def to_clip_tensor(img: Image.Image, preproc: str, py_rng: random.Random) -> tor
         img = img.crop((left, top, left + RES, top + RES))
     elif preproc == "nativecrop":
         w, h = img.size
-        if min(w, h) < RES:                       # too small to crop natively
+        if min(w, h) < RES:
             s = RES / min(w, h)
             img = img.resize((max(RES, int(round(w * s))), max(RES, int(round(h * s)))), Image.Resampling.BICUBIC)
             w, h = img.size
@@ -105,45 +87,28 @@ def to_clip_tensor(img: Image.Image, preproc: str, py_rng: random.Random) -> tor
     return (arr - _MEAN_T) / _STD_T
 
 
-# --------------------------------------------------------------------------
-# view generation
-#
-# PICKLING NOTE (see also augment.py): DataLoader workers are pickled on
-# Windows (spawn) but not on Linux/Mac (fork). Lambdas and closures survive
-# fork but not spawn. These were plain functions returning lambdas, which
-# worked in this repo's own testing (Linux) but breaks the moment a Windows
-# user runs the exact same code with num_workers > 0. Fixed by using
-# picklable classes with __call__ instead of closures.
-# --------------------------------------------------------------------------
-
 ViewFn = Callable[[Image.Image, np.random.Generator, random.Random], Image.Image]
 
 
 class RandomView:
-    """Draws a random degradation chain each call. Picklable — plain __init__ args only."""
-
     def __init__(self, max_ops: int = 3, p_clean: float = 0.15) -> None:
         self.max_ops = max_ops
         self.p_clean = p_clean
 
-    def __call__(self, img: Image.Image, rng: np.random.Generator, py_rng: random.Random) -> Image.Image:
+    def __call__(self, img, rng, py_rng):
         return A.sample_chain(img, rng, py_rng, max_ops=self.max_ops, p_clean=self.p_clean)[0]
 
 
 class CleanView:
-    """Identity view — the un-degraded image, used as view 0."""
-
-    def __call__(self, img: Image.Image, rng: np.random.Generator, py_rng: random.Random) -> Image.Image:
+    def __call__(self, img, rng, py_rng):
         return img
 
 
 class ConditionView:
-    """Wraps one NamedCondition (itself picklable — see augment.py) as a view."""
-
     def __init__(self, cond: A.NamedCondition) -> None:
         self.cond = cond
 
-    def __call__(self, img: Image.Image, rng: np.random.Generator, py_rng: random.Random) -> Image.Image:
+    def __call__(self, img, rng, py_rng):
         return self.cond.fn(img, rng)
 
 
@@ -160,54 +125,32 @@ def condition_view(cond: A.NamedCondition) -> ViewFn:
 
 
 class ViewDataset(Dataset):
-    """Yields (V, 3, 224, 224) — one tensor per view of the same source image."""
+    MAX_PIXELS = 200_000_000
 
-    def __init__(
-        self,
-        samples: Sequence[Sample],
-        views: Sequence[ViewFn],
-        preproc: str = "resize",
-        renormalise: bool = True,
-        seed: int = 0,
-    ) -> None:
+    def __init__(self, samples, views, preproc: str = "resize", renormalise: bool = True, seed: int = 0) -> None:
         self.samples = list(samples)
         self.views = list(views)
         self.preproc = preproc
         self.renormalise = renormalise
         self.seed = seed
 
-    # We disabled Pillow's default decompression-bomb limit (see top of file)
-    # because SID_Set legitimately has images up to ~6000px on a side. That
-    # protection existed for a reason though: a corrupt or malicious file can
-    # report absurd dimensions and blow up on the FIRST full decode -- which
-    # for PIL is .convert()/.load(), not .open() (.open only reads the
-    # header). An uncapped decode of a bad file can try to allocate many GB
-    # regardless of how much RAM the machine actually has, which surfaces as
-    # a PyTorch/C++ allocator RuntimeError, not a catchable PIL exception --
-    # so the bare try/except around .convert("RGB") below does not reliably
-    # catch it. This cap re-adds a sane ceiling: generous enough for any real
-    # photo (200 megapixels), tight enough to reject garbage headers before
-    # a single byte of pixel data is decoded.
-    MAX_PIXELS = 200_000_000
-
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
+    def __getitem__(self, idx: int):
         s = self.samples[idx]
-        # deterministic per-sample seeding -> reproducible across runs and workers
         seed = (self.seed * 1_000_003 + idx) % (2**31 - 1)
         rng = np.random.default_rng(seed)
         py_rng = random.Random(seed)
 
         try:
-            raw = Image.open(s.path)          # header only, does not decode pixels
+            raw = Image.open(s.path)
             w, h = raw.size
             if w * h > self.MAX_PIXELS:
                 print(f"[skip] {s.path}: {w}x{h} = {w*h/1e6:.0f}MP exceeds the "
                      f"{self.MAX_PIXELS/1e6:.0f}MP cap, likely a corrupt file — skipping")
                 return torch.zeros(len(self.views), 3, RES, RES), -1
-            img = raw.convert("RGB")          # decode happens here
+            img = raw.convert("RGB")
         except Exception as e:
             print(f"[skip] {s.path}: failed to load ({type(e).__name__}: {e})")
             return torch.zeros(len(self.views), 3, RES, RES), -1
@@ -219,23 +162,10 @@ class ViewDataset(Dataset):
         return torch.stack(out, 0), s.label
 
 
-# --------------------------------------------------------------------------
-# model
-# --------------------------------------------------------------------------
-
-
 def load_clip(model_name: str = "openai/clip-vit-large-patch14", device: str | None = None):
     from transformers import CLIPVisionModelWithProjection
 
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    # low_cpu_mem_usage skips the default HF loading path of building a full
-    # random-initialised model first and THEN overwriting it with pretrained
-    # weights (briefly needing ~2x the model's memory footprint). Instead
-    # weights are loaded straight onto their target tensors. For a ~303M
-    # param model in fp32 this is the difference between a peak of ~2.4GB
-    # and ~1.2GB during load -- exactly the class of allocation that fails
-    # with "not enough memory: tried to allocate 2147450880 bytes" on a
-    # machine without much free RAM.
     model = CLIPVisionModelWithProjection.from_pretrained(  # type: ignore[arg-type]
         model_name, low_cpu_mem_usage=True
     )
@@ -257,11 +187,18 @@ def embed(
     feature: str = "proj",
     batch_size: int = 32,
     num_workers: int = 8,
+    max_forward_batch: int = 128,
+    amp: bool | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Returns (feats, labels):
-        feats  (N, V, D) float16
-        labels (N,) int64,  -1 marks an image that failed to load
+    amp: None (default) auto-enables fp16 autocast whenever device=="cuda".
+    Pass amp=False to force full fp32 even on GPU -- this is the diagnostic
+    knob for the exact failure mode where GPU embeddings collapse toward
+    chance-level separation while the identical CPU/fp32 run works fine.
+    Two live causes produce that signature: fp16 genuinely destroying a
+    faint signal, or a still-rough fp16 kernel on very new GPU architectures
+    (e.g. sm_120/Blackwell, whose PyTorch support is recent). amp=False
+    isolates precision as a variable so you can tell which you're looking at.
     """
     dl = DataLoader(
         dataset,
@@ -272,26 +209,50 @@ def embed(
         persistent_workers=num_workers > 0,
     )
     n_views = len(dataset.views)
-    use_amp = device == "cuda"
+    use_amp = (device == "cuda") if amp is None else amp
+
+    if amp is False and device == "cuda":
+        # --no-amp turning off torch.autocast is NOT the same as genuine fp32.
+        # PyTorch defaults TF32 (reduced ~10-bit mantissa) ON for CUDA matmul
+        # and cuDNN convolutions on any tensor-core GPU, independent of
+        # autocast entirely. If the caller explicitly asked for full
+        # precision, honour that literally -- otherwise "--no-amp" is a lie
+        # on any Ampere-or-later card, this one (Blackwell/sm_120) included.
+        prev_mm = torch.backends.cuda.matmul.allow_tf32
+        prev_cudnn = torch.backends.cudnn.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        print("[embed] amp=False: also disabled TF32 (was on by default) for genuine fp32")
+    else:
+        prev_mm = prev_cudnn = None
 
     feats, labels = [], []
     for i, (x, y) in enumerate(dl):
         b = x.shape[0]
-        x = x.view(b * n_views, 3, RES, RES).to(device, non_blocking=True)
-        with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-            vout = model.vision_model(pixel_values=x)
-            pooled = vout.pooler_output                       # (B*V, H)
-            if feature == "pooled":
-                f = pooled
-            elif feature == "proj":
-                f = model.visual_projection(pooled)           # (B*V, P)
-            elif feature == "both":
-                f = torch.cat([pooled, model.visual_projection(pooled)], dim=-1)
-            else:
-                raise ValueError(f"unknown feature {feature!r}")
-        feats.append(f.float().view(b, n_views, -1).cpu().numpy().astype(np.float16))
+        x = x.view(b * n_views, 3, RES, RES)
+        chunks = []
+        for j in range(0, x.shape[0], max_forward_batch):
+            xc = x[j:j + max_forward_batch].to(device, non_blocking=True)
+            with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                vout = model.vision_model(pixel_values=xc)
+                pooled = vout.pooler_output
+                if feature == "pooled":
+                    f = pooled
+                elif feature == "proj":
+                    f = model.visual_projection(pooled)
+                elif feature == "both":
+                    f = torch.cat([pooled, model.visual_projection(pooled)], dim=-1)
+                else:
+                    raise ValueError(f"unknown feature {feature!r}")
+            chunks.append(f.float().cpu())
+        f_all = torch.cat(chunks, 0)
+        feats.append(f_all.view(b, n_views, -1).numpy().astype(np.float16))
         labels.append(y.numpy())
         if i % 20 == 0:
             print(f"  batch {i}/{len(dl)}", flush=True)
+
+    if prev_mm is not None:
+        torch.backends.cuda.matmul.allow_tf32 = prev_mm
+        torch.backends.cudnn.allow_tf32 = prev_cudnn
 
     return np.concatenate(feats, 0), np.concatenate(labels, 0)

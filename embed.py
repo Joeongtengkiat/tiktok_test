@@ -40,6 +40,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-renormalise", action="store_true",
                     help="ABLATION ONLY: skip the JPEG re-encode that kills the format shortcut")
+    ap.add_argument("--no-amp", action="store_true",
+                    help="DIAGNOSTIC: force full fp32 even on GPU. Use this if GPU-embedded "
+                         "signal looks weaker than an identical CPU run (e.g. clean AUROC "
+                         "near chance during training) -- isolates fp16 precision/kernel "
+                         "issues, which are a live concern on very new GPU architectures.")
     args = ap.parse_args()
 
     samples = CF.scan_dir(args.data)
@@ -69,6 +74,7 @@ def main() -> None:
         feature=args.feature,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        amp=(False if args.no_amp else None),
     )
     dt = time.time() - t0
     n_fwd = feats.shape[0] * feats.shape[1]

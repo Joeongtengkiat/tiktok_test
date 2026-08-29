@@ -5,7 +5,7 @@ model-quality test — the "signal" it embeds is a stand-in for whatever real
 generator fingerprint your actual data has.
 
 Real images:  smooth low-frequency gradients + mild noise (photo-like).
-Fake images:  the same gradients + a faint high-frequency grid (stand-in for
+Fake images:  the same gradients + a bold structural artifact (stand-in for
               a generator artifact) + a different noise profile.
 Tampered:     a real image with a small synthetic patch pasted in, plus a mask.
 
@@ -30,7 +30,7 @@ def make_real(rng: np.random.Generator, size: int) -> np.ndarray:
     yy, xx = np.mgrid[0:size, 0:size]
     base = (0.5 + 0.3 * np.sin(xx / size * np.pi + rng.uniform(0, 6)) +
             0.2 * np.cos(yy / size * np.pi + rng.uniform(0, 6)))
-    img = np.stack([base] * 3, axis=-1)
+    img = np.stack(([base] * 3), axis=-1)
     img += rng.normal(0, 0.05, img.shape)
     return np.clip(img, 0, 1)
 
@@ -38,9 +38,18 @@ def make_real(rng: np.random.Generator, size: int) -> np.ndarray:
 def make_fake(rng: np.random.Generator, size: int) -> np.ndarray:
     img = make_real(rng, size)
     yy, xx = np.mgrid[0:size, 0:size]
-    grid = 0.04 * np.sin(xx * np.pi / 2) * np.sin(yy * np.pi / 2)   # faint checker artifact
-    img += grid[..., None]
-    img += rng.normal(0, 0.02, img.shape)                            # different noise profile
+    # Bold, low-frequency, high-amplitude structural marker -- not a subtle
+    # texture. A faint high-frequency pattern (earlier versions used
+    # amplitude 0.04-0.15 at period 4-24px) turned out to be fragile across
+    # hardware: CPU and GPU floating-point kernels use different internal
+    # summation orders even at matching nominal precision, and a signal
+    # faint enough sits right at the edge of what survives that difference.
+    # This plumbing test has no reason to be subtle -- make it unmissable so
+    # a real pipeline bug can never hide behind "the signal was too faint".
+    quadrant = (np.logical_xor(xx > size // 2, yy > size // 2)).astype(np.float32)
+    img = img * 0.6 + quadrant[..., None] * 0.4          # bold checkerboard-quadrant shift
+    img[..., 0] += 0.25                                   # strong, saturating red-channel bias
+    img += rng.normal(0, 0.02, img.shape)                 # different noise profile
     return np.clip(img, 0, 1)
 
 
