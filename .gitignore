@@ -1,0 +1,15 @@
+data*/
+cache/
+cache*/
+runs/
+runs*/
+reports/
+reports*/
+errors/
+errors*/
+bench*/
+cocoraw/
+*.pt
+*.npy
+*.npz
+__pycache__/
